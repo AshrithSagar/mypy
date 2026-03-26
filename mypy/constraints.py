@@ -23,10 +23,13 @@ from mypy.nodes import (
 from mypy.types import (
     TUPLE_LIKE_INSTANCE_NAMES,
     AnyType,
+    AppliedKindType,
     CallableType,
     DeletedType,
     ErasedType,
     Instance,
+    KindTypeType,
+    KindVarType,
     LiteralType,
     NoneType,
     NormalizedCallableType,
@@ -711,6 +714,35 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
 
     def visit_type_var_tuple(self, template: TypeVarTupleType) -> list[Constraint]:
         raise NotImplementedError
+
+    def visit_kind_var_type(self, template: KindVarType) -> list[Constraint]:
+        actual = get_proper_type(self.actual)
+        if isinstance(actual, (KindVarType, AppliedKindType, AnyType)):
+            return [Constraint(template, SUBTYPE_OF, actual)]
+        return []
+
+    def visit_applied_kind_type(self, template: AppliedKindType) -> list[Constraint]:
+        actual = get_proper_type(self.actual)
+        res: list[Constraint] = []
+        if isinstance(actual, AppliedKindType):
+            if isinstance(template.base, KindVarType):
+                res.append(Constraint(template.base, SUBTYPE_OF, actual.base))
+            for template_arg, actual_arg in zip(template.args, actual.args):
+                res.extend(infer_constraints(template_arg, actual_arg, self.direction))
+        elif isinstance(actual, AnyType):
+            for arg in template.args:
+                res.extend(infer_constraints(arg, actual, self.direction))
+        return res
+
+    def visit_kind_type_type(self, template: KindTypeType) -> list[Constraint]:
+        actual = get_proper_type(self.actual)
+        res: list[Constraint] = []
+        if isinstance(actual, KindTypeType):
+            if template.kv.id == actual.kv.id:
+                if template.args and actual.args:
+                    for t_arg, a_arg in zip(template.args, actual.args):
+                        res.extend(infer_constraints(t_arg, a_arg, self.direction))
+        return res
 
     def visit_unpack_type(self, template: UnpackType) -> list[Constraint]:
         raise RuntimeError("Mypy bug: unpack should be handled at a higher level.")

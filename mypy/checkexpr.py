@@ -1834,7 +1834,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             and (len(arg_types) == 1)
             and is_equivalent(callee.ret_type, self.named_type("builtins.type"))
         ):
-            callee = callee.copy_modified(ret_type=TypeType.make_normalized(arg_types[0]))
+            arg_type = get_proper_type(arg_types[0])
+            if isinstance(arg_type, AppliedKindType):
+                new_ret: Type = KindTypeType(arg_type.base)
+            elif isinstance(arg_type, KindVarType):
+                new_ret = KindTypeType(arg_type)
+            else:
+                new_ret = TypeType.make_normalized(arg_types[0])
+            callee = callee.copy_modified(ret_type=new_ret)
 
         if callable_node:
             # Store the inferred callable type.

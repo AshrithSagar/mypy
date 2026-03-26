@@ -4072,6 +4072,9 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
         return f"{t.base.name}[{args}]"
 
     def visit_kind_type_type(self, t: KindTypeType, /) -> str:
+        if t.args:
+            args_str = ", ".join(arg.accept(self) for arg in t.args)
+            return f"type[{t.kv.name}[{args_str}]]"
         return f"type[{t.kv.name}]"
 
     def visit_callable_type(self, t: CallableType, /) -> str:
