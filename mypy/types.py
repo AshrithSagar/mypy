@@ -1034,7 +1034,7 @@ class KindVarType(TypeVarLikeType):
 
     kind_arity: int
     variance: int
-    bound_args: list[UnboundType]  # the typeargs of the bound, i.e., the T in, say, Iterable[T]
+    bound_args: list[TypeVarType]  # the typeargs of the bound, i.e., the T in, say, Iterable[T]
 
     def __init__(
         self,

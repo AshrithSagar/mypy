@@ -5189,10 +5189,10 @@ class SemanticAnalyzer(
         kind_arity = 1
         bound_args = []
 
-        def collect_type_vars(t: Type) -> list[UnboundType]:
-            result: list[UnboundType] = []
+        def collect_type_vars(t: Type) -> list[TypeVarType]:
+            result: list[TypeVarType] = []
             proper = get_proper_type(t)
-            if isinstance(proper, UnboundType):
+            if isinstance(proper, TypeVarType):
                 result.append(proper)
             elif isinstance(proper, Instance):
                 for arg in proper.args:
@@ -5210,6 +5210,23 @@ class SemanticAnalyzer(
                 )
                 if analyzed is not None:
                     upper_bound = analyzed
+
+                    # Resolve any remaining UnboundType vars to TypeVarType
+                    def resolve_unbound(t: Type) -> Type:
+                        proper = get_proper_type(t)
+                        if isinstance(proper, UnboundType):
+                            sym = self.lookup_qualified(proper.name, proper, suppress_errors=True)
+                            if sym is not None and isinstance(sym.node, TypeVarExpr):
+                                tv_def = self.tvar_scope.get_binding(sym.node.fullname)
+                                if tv_def is not None:
+                                    return tv_def
+                        if isinstance(proper, Instance):
+                            return proper.copy_modified(
+                                args=[resolve_unbound(a) for a in proper.args]
+                            )
+                        return t
+
+                    upper_bound = resolve_unbound(upper_bound)
                     bound_args = collect_type_vars(upper_bound)
 
         kindvar = KindVarExpr(

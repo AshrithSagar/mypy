@@ -19,6 +19,7 @@ from mypy.checker_shared import ExpressionCheckerSharedApi
 from mypy.checkmember import analyze_member_access, has_operator
 from mypy.checkstrformat import StringFormatterChecker
 from mypy.constant_fold import constant_fold_expr
+from mypy.constraints import SUPERTYPE_OF, infer_constraints
 from mypy.erasetype import erase_type, remove_instance_last_known_values, replace_meta_vars
 from mypy.errors import ErrorInfo, ErrorWatcher, report_internal_error
 from mypy.expandtype import (
@@ -121,6 +122,7 @@ from mypy.plugin import (
     Plugin,
 )
 from mypy.semanal_enum import ENUM_BASES
+from mypy.solve import solve_constraints
 from mypy.state import state
 from mypy.subtypes import (
     covers_at_runtime,
@@ -1656,7 +1658,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     base=callee.kv, args=callee.args, line=context.line, column=context.column
                 )
             else:
-                result_type = AnyType(TypeOfAny.special_form)
+                result_type = self.infer_kind_type_call(callee.kv, args, arg_kinds, context)
             return result_type, callee
         elif isinstance(callee, TupleType):
             return self.check_call(
@@ -1676,6 +1678,81 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             return callee, ret
         else:
             return self.msg.not_callable(callee, context), AnyType(TypeOfAny.from_error)
+
+    def infer_kind_type_call(
+        self,
+        kv: KindVarType,
+        args: list[Expression],
+        arg_kinds: list[ArgKind],
+        context: Context,
+    ) -> Type:
+        """Infer F[X] from type[F](arg) by matching arg's type against F's bound."""
+
+        if not args:
+            return AnyType(TypeOfAny.special_form)
+
+        arg_type = self.accept(args[0])
+        bound = kv.upper_bound
+        bound_tvars = get_all_type_vars(bound)
+        if not bound_tvars:
+            unbound_names: set[str] = set()
+
+            def collect_unbound(t: Type) -> None:
+                proper = get_proper_type(t)
+                if isinstance(proper, UnboundType):
+                    unbound_names.add(proper.name)
+                elif isinstance(proper, Instance):
+                    for arg in proper.args:
+                        collect_unbound(arg)
+
+            collect_unbound(bound)
+
+            if unbound_names:
+                # Create fresh TypeVarTypes for each unbound name
+                # These are inference variables — we just need stable ids
+                object_type = self.named_type("builtins.object")
+                for i, name in enumerate(sorted(unbound_names)):
+                    fresh_tv = TypeVarType(
+                        name=name,
+                        fullname=f"__infer__.{name}",
+                        id=TypeVarId(-1000 - i),  # negative ids unlikely to clash
+                        values=[],
+                        upper_bound=object_type,
+                        default=AnyType(TypeOfAny.special_form),
+                    )
+                    bound_tvars.append(fresh_tv)
+
+        if not bound_tvars:
+            return AnyType(TypeOfAny.special_form)
+
+        name_to_tv = {tv.name: tv for tv in bound_tvars if isinstance(tv, TypeVarType)}
+
+        def resolve_bound(t: Type) -> Type:
+            proper = get_proper_type(t)
+            if isinstance(proper, UnboundType) and proper.name in name_to_tv:
+                return name_to_tv[proper.name]
+            if isinstance(proper, Instance):
+                return proper.copy_modified(args=[resolve_bound(a) for a in proper.args])
+            return t
+
+        resolved_bound = resolve_bound(bound)
+
+        constraints = infer_constraints(resolved_bound, arg_type, SUPERTYPE_OF)
+        if not constraints:
+            return AnyType(TypeOfAny.special_form)
+
+        solutions, _ = solve_constraints(list(bound_tvars), constraints, strict=False)
+
+        inferred_args = [
+            sol if sol is not None else AnyType(TypeOfAny.special_form) for sol in solutions
+        ]
+
+        if not inferred_args:
+            return AnyType(TypeOfAny.special_form)
+
+        return AppliedKindType(
+            base=kv, args=inferred_args, line=context.line, column=context.column
+        )
 
     def check_callable_call(
         self,

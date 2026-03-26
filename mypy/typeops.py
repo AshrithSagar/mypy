@@ -36,11 +36,14 @@ from mypy.types import (
     ELLIPSIS_TYPE_NAMES,
     NOT_IMPLEMENTED_TYPE_NAMES,
     AnyType,
+    AppliedKindType,
     CallableType,
     ExtraAttrs,
     FormalArgument,
     FunctionLike,
     Instance,
+    KindTypeType,
+    KindVarType,
     LiteralType,
     NoneType,
     NormalizedCallableType,
@@ -1167,6 +1170,19 @@ class TypeVarExtractor(TypeQuery[list[TypeVarLikeType]]):
 
     def visit_type_var_tuple(self, t: TypeVarTupleType) -> list[TypeVarLikeType]:
         return [t] if self.include_all else []
+
+    def visit_kind_var_type(self, t: KindVarType) -> list[TypeVarLikeType]:
+        return [t] if self.include_all else []
+
+    def visit_applied_kind_type(self, t: AppliedKindType) -> list[TypeVarLikeType]:
+        # Recurse into args to find any TypeVarLikeType inside
+        result: list[TypeVarLikeType] = []
+        for arg in t.args:
+            result.extend(arg.accept(self))
+        return result
+
+    def visit_kind_type_type(self, t: KindTypeType) -> list[TypeVarLikeType]:
+        return []
 
 
 def freeze_all_type_vars(member_type: Type) -> None:

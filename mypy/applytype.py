@@ -10,8 +10,10 @@ from mypy.type_visitor import TypeTranslator
 from mypy.typeops import get_all_type_vars
 from mypy.types import (
     AnyType,
+    AppliedKindType,
     CallableType,
     Instance,
+    KindVarType,
     Parameters,
     ParamSpecFlavor,
     ParamSpecType,
@@ -44,6 +46,15 @@ def get_target_type(
     if isinstance(tvar, ParamSpecType):
         return type
     if isinstance(tvar, TypeVarTupleType):
+        return type
+    if isinstance(tvar, KindVarType):
+        if isinstance(get_proper_type(type), (KindVarType, AppliedKindType)):
+            return type  # KindVar-to-KindVar substitution, skip bound check
+        if tvar.upper_bound is not None:
+            if not mypy.subtypes.is_subtype(type, tvar.upper_bound):
+                if skip_unsatisfied:
+                    return None
+                report_incompatible_typevar_value(callable, type, tvar.name, context)
         return type
     assert isinstance(tvar, TypeVarType)
     values = tvar.values
