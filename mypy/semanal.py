@@ -132,6 +132,7 @@ from mypy.nodes import (
     ImportFrom,
     IndexExpr,
     IntExpr,
+    KindVarExpr,
     LambdaExpr,
     ListComprehension,
     ListExpr,
@@ -3340,6 +3341,8 @@ class SemanticAnalyzer(
                 special_form = True
             elif self.process_typevartuple_declaration(s):
                 special_form = True
+            elif self.process_kindvar_declaration(s):
+                special_form = True
             # * type constructors
             elif self.analyze_namedtuple_assign(s):
                 special_form = True
@@ -5165,6 +5168,62 @@ class SemanticAnalyzer(
             self.process_placeholder(None, "TypeVarTuple default", s, force_progress=updated)
 
         self.add_symbol(name, call.analyzed, s)
+        return True
+
+    def process_kindvar_declaration(self, s: AssignmentStmt) -> bool:
+        call = self.get_typevarlike_declaration(
+            s,
+            ("typing.KindVar", "typing_extensions.KindVar"),
+        )
+        if not call:
+            return False
+
+        name = self.extract_typevarlike_name(s, call)
+        if name is None:
+            return False
+
+        # Default values (match TypeVar behavior)
+        upper_bound = self.object_type()
+        default = AnyType(TypeOfAny.from_omitted_generics)
+        variance = INVARIANT
+        kind_arity = 1
+        bound_args = []
+
+        def collect_type_vars(t: Type) -> list[UnboundType]:
+            result: list[UnboundType] = []
+            proper = get_proper_type(t)
+            if isinstance(proper, UnboundType):
+                result.append(proper)
+            elif isinstance(proper, Instance):
+                for arg in proper.args:
+                    result.extend(collect_type_vars(arg))
+            return result
+
+        # Parse kwargs
+        upper_bound = self.object_type()  # default
+        for arg_name, arg_value in zip(call.arg_names, call.args):
+            if arg_name == "kind" and isinstance(arg_value, IntExpr):
+                kind_arity = arg_value.value
+            elif arg_name == "bound":
+                analyzed = self.anal_type(
+                    self.expr_to_unanalyzed_type(arg_value), allow_unbound_tvars=True
+                )
+                if analyzed is not None:
+                    upper_bound = analyzed
+                    bound_args = collect_type_vars(upper_bound)
+
+        kindvar = KindVarExpr(
+            name,
+            self.qualified_name(name),
+            kind_arity,
+            upper_bound,
+            bound_args,
+            default,
+            variance,
+            line=call.line,
+        )
+
+        self.add_symbol(name, kindvar, s)
         return True
 
     def basic_new_typeinfo(self, name: str, basetype_or_fallback: Instance, line: int) -> TypeInfo:

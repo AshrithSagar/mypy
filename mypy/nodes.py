@@ -3329,6 +3329,81 @@ class TypeVarTupleExpr(TypeVarLikeExpr):
         return ret
 
 
+class KindVarExpr(TypeVarLikeExpr):
+    __slots__ = ("kind_arity", "bound_args")
+
+    __match_args__ = ("name", "kind_arity", "upper_bound", "default")
+
+    def __init__(
+        self,
+        name: str,
+        fullname: str,
+        kind_arity: int,
+        upper_bound: mypy.types.Type,
+        bound_args: list[mypy.types.TypeVarType],
+        default: mypy.types.Type,
+        variance: int = INVARIANT,
+        is_new_style: bool = False,
+        line: int = -1,
+    ) -> None:
+        super().__init__(name, fullname, upper_bound, default, variance, is_new_style, line=line)
+        self.kind_arity = kind_arity
+        self.bound_args = bound_args
+
+    def accept(self, visitor: ExpressionVisitor[T]) -> T:
+        return visitor.visit_kind_var_expr(self)
+
+    def serialize(self) -> JsonDict:
+        return {
+            ".class": "KindVarExpr",
+            "name": self._name,
+            "fullname": self._fullname,
+            "kind_arity": self.kind_arity,
+            "upper_bound": self.upper_bound.serialize(),
+            "bound_args": [t.serialize() for t in self.bound_args],
+            "default": self.default.serialize(),
+            "variance": self.variance,
+        }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> KindVarExpr:
+        assert data[".class"] == "KindVarExpr"
+        return KindVarExpr(
+            data["name"],
+            data["fullname"],
+            data["kind_arity"],
+            mypy.types.deserialize_type(data["upper_bound"]),
+            [mypy.types.deserialize_type(v) for v in data["bound_args"]],
+            mypy.types.deserialize_type(data["default"]),
+            data["variance"],
+        )
+
+    def write(self, data: WriteBuffer) -> None:
+        write_tag(data, KIND_VAR_EXPR)
+        write_str(data, self._name)
+        write_str(data, self._fullname)
+        write_int(data, self.kind_arity)
+        self.upper_bound.write(data)
+        mypy.types.write_type_list(data, self.bound_args)
+        self.default.write(data)
+        write_int(data, self.variance)
+        write_tag(data, END_TAG)
+
+    @classmethod
+    def read(cls, data: ReadBuffer) -> KindVarExpr:
+        ret = KindVarExpr(
+            read_str(data),
+            read_str(data),
+            read_int(data),
+            mypy.types.read_type(data),
+            mypy.types.read_type_list(data),
+            mypy.types.read_type(data),
+            read_int(data),
+        )
+        assert read_tag(data) == END_TAG
+        return ret
+
+
 class TypeAliasExpr(Expression):
     """Type alias expression (rvalue)."""
 
@@ -5260,6 +5335,7 @@ TYPE_INFO: Final[Tag] = 58
 TYPE_ALIAS: Final[Tag] = 59
 CLASS_DEF: Final[Tag] = 60
 SYMBOL_TABLE_NODE: Final[Tag] = 61
+KIND_VAR_EXPR: Final[Tag] = 62
 
 EXPR_STMT: Final[Tag] = 160
 CALL_EXPR: Final[Tag] = 161
@@ -5354,6 +5430,8 @@ def read_symbol(data: ReadBuffer) -> SymbolNode:
         return ParamSpecExpr.read(data)
     if tag == TYPE_VAR_TUPLE_EXPR:
         return TypeVarTupleExpr.read(data)
+    if tag == KIND_VAR_EXPR:
+        return KindVarExpr.read(data)
     assert False, f"Unknown symbol tag {tag}"
 
 

@@ -21,12 +21,15 @@ from mypy_extensions import mypyc_attr, trait
 
 from mypy.types import (
     AnyType,
+    AppliedKindType,
     CallableArgument,
     CallableType,
     DeletedType,
     EllipsisType,
     ErasedType,
     Instance,
+    KindTypeType,
+    KindVarType,
     LiteralType,
     NoneType,
     Overloaded,
@@ -146,6 +149,18 @@ class TypeVisitor(Generic[T]):
     def visit_unpack_type(self, t: UnpackType, /) -> T:
         pass
 
+    @abstractmethod
+    def visit_kind_var_type(self, t: KindVarType, /) -> T:
+        pass
+
+    @abstractmethod
+    def visit_applied_kind_type(self, t: AppliedKindType, /) -> T:
+        pass
+
+    @abstractmethod
+    def visit_kind_type_type(self, t: KindTypeType, /) -> T:
+        pass
+
 
 @trait
 @mypyc_attr(allow_interpreted_subclasses=True)
@@ -245,6 +260,15 @@ class TypeTranslator(TypeVisitor[Type]):
         return t.copy_modified(arg_types=self.translate_type_list(t.arg_types))
 
     def visit_type_var_tuple(self, t: TypeVarTupleType, /) -> Type:
+        return t
+
+    def visit_kind_var_type(self, t: KindVarType, /) -> Type:
+        return t
+
+    def visit_applied_kind_type(self, t: AppliedKindType, /) -> Type:
+        return t
+
+    def visit_kind_type_type(self, t: KindTypeType, /) -> Type:
         return t
 
     def visit_partial_type(self, t: PartialType, /) -> Type:

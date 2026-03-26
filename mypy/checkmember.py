@@ -53,6 +53,7 @@ from mypy.typeops import (
 )
 from mypy.types import (
     AnyType,
+    AppliedKindType,
     CallableType,
     DeletedType,
     FunctionLike,
@@ -75,6 +76,7 @@ from mypy.types import (
     UnionType,
     get_proper_type,
 )
+from mypy.types_utils import substitute_kind_args
 
 
 class MemberContext:
@@ -261,6 +263,11 @@ def _analyze_member_access(
         return analyze_typeddict_access(name, typ, mx, override_info)
     elif isinstance(typ, NoneType):
         return analyze_none_member_access(name, typ, mx)
+    elif isinstance(typ, AppliedKindType):  # ← NEW BRANCH
+        bound = typ.base.upper_bound
+        name_to_arg = {ubt.name: arg for ubt, arg in zip(typ.base.bound_args, typ.args)}
+        expanded_bound = substitute_kind_args(bound, name_to_arg)
+        return _analyze_member_access(name, expanded_bound, mx, override_info)
     elif isinstance(typ, TypeVarLikeType):
         if isinstance(typ, TypeVarType) and typ.values:
             return _analyze_member_access(

@@ -172,6 +172,10 @@ class ExpressionVisitor(Generic[T]):
         pass
 
     @abstractmethod
+    def visit_kind_var_expr(self, o: mypy.nodes.KindVarExpr, /) -> T:
+        pass
+
+    @abstractmethod
     def visit_type_alias_expr(self, o: mypy.nodes.TypeAliasExpr, /) -> T:
         pass
 

@@ -5,6 +5,7 @@ from typing import TypeAlias as _TypeAlias
 
 from mypy.nodes import (
     Context,
+    KindVarExpr,
     ParamSpecExpr,
     SymbolTableNode,
     TypeVarExpr,
@@ -13,6 +14,7 @@ from mypy.nodes import (
 )
 from mypy.types import (
     AnyType,
+    KindVarType,
     ParamSpecFlavor,
     ParamSpecType,
     TrivialSyntheticTypeTranslator,
@@ -188,6 +190,19 @@ class TypeVarLikeScope:
                 upper_bound=tvar_expr.upper_bound,
                 tuple_fallback=tvar_expr.tuple_fallback,
                 default=default,
+                line=tvar_expr.line,
+                column=tvar_expr.column,
+            )
+        elif isinstance(tvar_expr, KindVarExpr):
+            tvar_def: TypeVarLikeType = KindVarType(
+                name=name,
+                fullname=tvar_expr.fullname,
+                id=TypeVarId(i, namespace=namespace),
+                kind_arity=tvar_expr.kind_arity,
+                upper_bound=tvar_expr.upper_bound,
+                bound_args=tvar_expr.bound_args,
+                default=default,
+                variance=tvar_expr.variance,
                 line=tvar_expr.line,
                 column=tvar_expr.column,
             )

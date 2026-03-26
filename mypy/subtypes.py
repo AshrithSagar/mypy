@@ -40,12 +40,14 @@ from mypy.types import (
     TUPLE_LIKE_INSTANCE_NAMES,
     TYPED_NAMEDTUPLE_NAMES,
     AnyType,
+    AppliedKindType,
     CallableType,
     DeletedType,
     ErasedType,
     FormalArgument,
     FunctionLike,
     Instance,
+    KindTypeType,
     LiteralType,
     NoneType,
     NormalizedCallableType,
@@ -676,6 +678,65 @@ class SubtypeVisitor(TypeVisitor[bool]):
         if isinstance(right, TypeVarTupleType) and right.id == left.id:
             return left.min_len >= right.min_len
         return self._is_subtype(left.upper_bound, self.right)
+
+    def visit_applied_kind_type(self, left: AppliedKindType) -> bool:
+        right = self.right
+        # F[A] <: Any
+        if isinstance(right, AnyType):
+            return True
+        # Any <: F[A]  — handled before we get here (left is never Any)
+        # F[A] <: F[B]  requires same KindVar and args compatible
+        if isinstance(right, AppliedKindType):
+            if left.base.id != right.base.id:
+                # Different KindVars — fall back to upper_bound comparison
+                return self._is_subtype(left.base.upper_bound, right.base.upper_bound)
+            if len(left.args) != len(right.args):
+                return False
+            for l_arg, r_arg in zip(left.args, right.args):
+                # If either side is a TypeVar, let inference handle it
+                if isinstance(get_proper_type(r_arg), TypeVarType):
+                    continue
+                if isinstance(get_proper_type(l_arg), TypeVarType):
+                    continue
+                # For now KindVar only supports invariant (the default).
+                # Invariant: both directions must hold.
+                if not self._is_subtype(l_arg, r_arg):
+                    return False
+                if not self._is_subtype(r_arg, l_arg):
+                    return False
+            return True
+        # F[A] <: X  iff  upper_bound(F)[A/T] <: X
+        if left.base.upper_bound is not None and left.base.bound_args:
+            bound = left.base.upper_bound
+            name_to_arg: dict[str, Type] = {
+                ubt.name: arg for ubt, arg in zip(left.base.bound_args, left.args)
+            }
+
+            def substitute(t: Type) -> Type:
+                proper = get_proper_type(t)
+                if isinstance(proper, UnboundType) and proper.name in name_to_arg:
+                    return name_to_arg[proper.name]
+                if isinstance(proper, Instance):
+                    new_args = [substitute(a) for a in proper.args]
+                    return proper.copy_modified(args=new_args)
+                if isinstance(proper, TypeVarType) and proper.name in name_to_arg:
+                    return name_to_arg[proper.name]
+                return proper
+
+            bound = substitute(bound)
+            return self._is_subtype(bound, right)
+        return False
+
+    def visit_kind_type_type(self, left: KindTypeType) -> bool:
+        right = self.right
+        if isinstance(right, AnyType):
+            return True
+        if isinstance(right, KindTypeType):
+            return left.kv.id == right.kv.id
+        # type[F] <: type[object] fallback
+        if isinstance(right, TypeType):
+            return self._is_subtype(left.kv.upper_bound, right.item)
+        return False
 
     def visit_unpack_type(self, left: UnpackType) -> bool:
         # TODO: Ideally we should not need this (since it is not a real type).

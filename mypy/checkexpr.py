@@ -68,6 +68,7 @@ from mypy.nodes import (
     GeneratorExpr,
     IndexExpr,
     IntExpr,
+    KindVarExpr,
     LambdaExpr,
     ListComprehension,
     ListExpr,
@@ -167,12 +168,15 @@ from mypy.types import (
     LITERAL_TYPE_NAMES,
     TUPLE_LIKE_INSTANCE_NAMES,
     AnyType,
+    AppliedKindType,
     CallableType,
     DeletedType,
     ErasedType,
     ExtraAttrs,
     FunctionLike,
     Instance,
+    KindTypeType,
+    KindVarType,
     LiteralType,
     LiteralValue,
     NoneType,
@@ -440,7 +444,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 )
         elif isinstance(node, TypeVarExpr):
             return self.named_type("typing.TypeVar")
-        elif isinstance(node, (ParamSpecExpr, TypeVarTupleExpr)):
+        elif isinstance(node, (ParamSpecExpr, TypeVarTupleExpr, KindVarExpr)):
             return self.object_type()
         elif isinstance(node, MypyFile):
             # Reference to a module object.
@@ -1637,7 +1641,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
         elif isinstance(callee, TypeType):
             item = self.analyze_type_type_callee(callee.item, context)
+            if isinstance(item, AppliedKindType):
+                self.msg.note(
+                    "Constructing higher-kinded type — argument types not checked", context
+                )
+                constructed = AppliedKindType(
+                    base=item.base, args=item.args, line=context.line, column=context.column
+                )
+                return constructed, callee
             return self.check_call(item, args, arg_kinds, context, arg_names, callable_node)
+        elif isinstance(callee, KindTypeType):
+            if callee.args is not None:
+                result_type = AppliedKindType(
+                    base=callee.kv, args=callee.args, line=context.line, column=context.column
+                )
+            else:
+                result_type = AnyType(TypeOfAny.special_form)
+            return result_type, callee
         elif isinstance(callee, TupleType):
             return self.check_call(
                 tuple_fallback(callee),
@@ -1899,6 +1919,20 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             elif isinstance(callee, Overloaded):
                 callee = Overloaded([c.copy_modified(ret_type=item) for c in callee.items])
             return callee
+        if isinstance(item, AppliedKindType):
+            # type(obj) where obj: F[A] — return type[F] (unapplied)
+            return KindTypeType(item.base)
+        if isinstance(item, KindVarType):
+            return KindTypeType(item)
+        if isinstance(item, KindTypeType):
+            if item.args is not None:
+                # type[F[B]](...) -> F[B]
+                return AppliedKindType(
+                    base=item.kv, args=item.args, line=context.line, column=context.column
+                )
+            else:
+                # type[F](...) -> F[?] — args unknown, return Any for now
+                return AnyType(TypeOfAny.special_form)
         # We support Type of namedtuples but not of tuples in general
         if isinstance(item, TupleType) and tuple_fallback(item).type.fullname != "builtins.tuple":
             return self.analyze_type_type_callee(tuple_fallback(item), context)
@@ -4404,7 +4438,41 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # It's actually a type application.
             return self.accept(e.analyzed)
         left_type = self.accept(e.base)
+        proper_left = get_proper_type(left_type)
+        if isinstance(proper_left, TypeType):
+            inner = proper_left.item
+            if isinstance(inner, KindVarType):
+                return self.check_kind_type_subscript(inner, e)
+            if isinstance(inner, AppliedKindType):
+                return self.check_kind_type_subscript(inner.base, e)
+        if isinstance(proper_left, KindTypeType):
+            return self.check_kind_type_subscript(proper_left.kv, e)
         return self.visit_index_with_type(left_type, e)
+
+    def check_kind_type_subscript(self, kv: KindVarType, e: IndexExpr) -> Type:
+        """Handle cls[X] where cls: type[F] and F is a KindVar."""
+        index_node = e.index
+
+        with self.msg.filter_errors():
+            raw = self.accept(index_node)
+
+        proper = get_proper_type(raw)
+        index_as_type: Type
+        if isinstance(proper, TypeType):
+            index_as_type = proper.item
+        elif isinstance(index_node, NameExpr) and isinstance(index_node.node, TypeVarExpr):
+            target_fullname = index_node.node.fullname
+            fn = self.chk.scope.current_function()
+            index_as_type = AnyType(TypeOfAny.from_omitted_generics)
+            if fn is not None and isinstance(fn.type, CallableType):
+                for tv in fn.type.variables:
+                    if tv.fullname == target_fullname:
+                        index_as_type = tv
+                        break
+        else:
+            index_as_type = raw
+
+        return KindTypeType(kv, args=[index_as_type], line=e.line, column=e.column)
 
     def visit_index_with_type(
         self,
@@ -6312,6 +6380,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
     def visit_type_var_tuple_expr(self, e: TypeVarTupleExpr) -> Type:
         return AnyType(TypeOfAny.special_form)
+
+    def visit_kind_var_expr(self, e: KindVarExpr) -> Type:
+        return self.object_type()
 
     def visit_newtype_expr(self, e: NewTypeExpr) -> Type:
         return AnyType(TypeOfAny.special_form)

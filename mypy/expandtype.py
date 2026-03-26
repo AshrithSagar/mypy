@@ -8,12 +8,15 @@ from mypy.state import state
 from mypy.types import (
     ANY_STRATEGY,
     AnyType,
+    AppliedKindType,
     BoolTypeQuery,
     CallableType,
     DeletedType,
     ErasedType,
     FunctionLike,
     Instance,
+    KindTypeType,
+    KindVarType,
     LiteralType,
     NoneType,
     Overloaded,
@@ -373,6 +376,19 @@ class ExpandTypeVisitor(TrivialSyntheticTypeTranslator):
             # in rare cases (e.g. ParamSpec containing Unpack star args) it may be skipped.
             return t.tuple_fallback.copy_modified(args=[repl])
         raise NotImplementedError
+
+    def visit_kind_var_type(self, t: KindVarType) -> Type:
+        repl = self.variables.get(t.id)
+        if repl is not None:
+            return repl
+        return t
+
+    def visit_applied_kind_type(self, t: AppliedKindType) -> Type:
+        new_args = [arg.accept(self) for arg in t.args]
+        return AppliedKindType(base=t.base, args=new_args, line=t.line, column=t.column)
+
+    def visit_kind_type_type(self, t: KindTypeType) -> Type:
+        return t
 
     def visit_unpack_type(self, t: UnpackType) -> Type:
         # It is impossible to reasonably implement visit_unpack_type, because

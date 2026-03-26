@@ -107,6 +107,8 @@ TYPE_VAR_LIKE_NAMES: Final = (
     "typing_extensions.ParamSpec",
     "typing.TypeVarTuple",
     "typing_extensions.TypeVarTuple",
+    "typing.KindVar",
+    "typing_extensions.KindVar",
 )
 
 TYPED_NAMEDTUPLE_NAMES: Final = ("typing.NamedTuple", "typing_extensions.NamedTuple")
@@ -1025,6 +1027,237 @@ class TypeVarTupleType(TypeVarLikeType):
             column=self.column,
             min_len=self.min_len if min_len is _dummy else min_len,
         )
+
+
+class KindVarType(TypeVarLikeType):
+    __slots__ = ("kind_arity", "variance", "bound_args")
+
+    kind_arity: int
+    variance: int
+    bound_args: list[UnboundType]  # the typeargs of the bound, i.e., the T in, say, Iterable[T]
+
+    def __init__(
+        self,
+        name: str,
+        fullname: str,
+        id: TypeVarId,
+        kind_arity: int,
+        upper_bound: Type,
+        bound_args: list[UnboundType],
+        default: Type,
+        variance: int = INVARIANT,
+        line: int = -1,
+        column: int = -1,
+    ) -> None:
+        super().__init__(name, fullname, id, upper_bound, default, line, column)
+        self.kind_arity = kind_arity
+        self.bound_args = bound_args
+        self.variance = variance
+
+    def copy_modified(
+        self,
+        *,
+        kind_arity: Bogus[int] = _dummy,
+        upper_bound: Bogus[Type] = _dummy,
+        bound_args: Bogus[list[UnboundType]] = _dummy,
+        default: Bogus[Type] = _dummy,
+        id: Bogus[TypeVarId] = _dummy,
+        line: int = _dummy_int,
+        column: int = _dummy_int,
+        **kwargs: Any,
+    ) -> KindVarType:
+        return KindVarType(
+            name=self.name,
+            fullname=self.fullname,
+            id=self.id if id is _dummy else id,
+            kind_arity=self.kind_arity if kind_arity is _dummy else kind_arity,
+            upper_bound=self.upper_bound if upper_bound is _dummy else upper_bound,
+            bound_args=self.bound_args if bound_args is _dummy else bound_args,
+            default=self.default if default is _dummy else default,
+            variance=self.variance,
+            line=self.line if line == _dummy_int else line,
+            column=self.column if column == _dummy_int else column,
+        )
+
+    def accept(self, visitor: TypeVisitor[T]) -> T:
+        return visitor.visit_kind_var_type(self)
+
+    def __hash__(self) -> int:
+        return hash((self.id, self.upper_bound, self.kind_arity))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, KindVarType):
+            return NotImplemented
+        return (
+            self.id == other.id
+            and self.upper_bound == other.upper_bound
+            and self.kind_arity == other.kind_arity
+        )
+
+    def serialize(self) -> JsonDict:
+        assert not self.id.is_meta_var()
+        return {
+            ".class": "KindVarType",
+            "name": self.name,
+            "fullname": self.fullname,
+            "id": self.id.raw_id,
+            "namespace": self.id.namespace,
+            "kind_arity": self.kind_arity,
+            "upper_bound": self.upper_bound.serialize(),
+            "bound_args": self.bound_args,
+            "default": self.default.serialize(),
+            "variance": self.variance,
+        }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> KindVarType:
+        assert data[".class"] == "KindVarType"
+        return KindVarType(
+            name=data["name"],
+            fullname=data["fullname"],
+            id=TypeVarId(data["id"], namespace=data["namespace"]),
+            kind_arity=data["kind_arity"],
+            upper_bound=deserialize_type(data["upper_bound"]),
+            bound_args=data["bound_args"],
+            default=deserialize_type(data["default"]),
+            variance=data["variance"],
+        )
+
+    def write(self, data: WriteBuffer) -> None:
+        write_tag(data, KIND_VAR_TYPE)
+        write_str(data, self.name)
+        write_str(data, self.fullname)
+        write_int(data, self.id.raw_id)
+        write_str(data, self.id.namespace)
+        write_int(data, self.kind_arity)
+        self.upper_bound.write(data)
+        write_type_list(data, self.bound_args)
+        self.default.write(data)
+        write_int(data, self.variance)
+        write_tag(data, END_TAG)
+
+    @classmethod
+    def read(cls, data: ReadBuffer) -> KindVarType:
+        ret = KindVarType(
+            read_str(data),
+            read_str(data),
+            TypeVarId(read_int(data), namespace=read_str(data)),
+            read_int(data),
+            read_type(data),
+            read_type_list(data),
+            read_type(data),
+            read_int(data),
+        )
+        assert read_tag(data) == END_TAG
+        return ret
+
+
+class AppliedKindType(ProperType):
+    __slots__ = ("base", "args")
+
+    base: KindVarType
+    args: list[Type]
+
+    def __init__(
+        self,
+        base: KindVarType,
+        args: list[Type],
+        line: int = -1,
+        column: int = -1,
+    ) -> None:
+        super().__init__(line, column)
+        self.base = base
+        self.args = args
+
+    def fallback(self) -> Instance:
+        return self.base.upper_bound
+
+    def accept(self, visitor: TypeVisitor[T]) -> T:
+        return visitor.visit_applied_kind_type(self)
+
+    def __hash__(self) -> int:
+        return hash((self.base, tuple(self.args)))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AppliedKindType):
+            return NotImplemented
+        return self.base == other.base and self.args == other.args
+
+    def __repr__(self) -> str:
+        return f"{self.base.name}[{', '.join(map(str, self.args))}]"
+
+    def serialize(self) -> JsonDict:
+        return {
+            ".class": "AppliedKindType",
+            "base": self.base.serialize(),
+            "args": [arg.serialize() for arg in self.args],
+        }
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> AppliedKindType:
+        assert data[".class"] == "AppliedKindType"
+        return AppliedKindType(
+            base=KindVarType.deserialize(data["base"]),
+            args=[deserialize_type(a) for a in data["args"]],
+        )
+
+    def write(self, data: WriteBuffer) -> None:
+        write_tag(data, APPLIED_KIND_TYPE)
+        self.base.write(data)
+        write_type_list(data, self.args)
+        write_tag(data, END_TAG)
+
+    @classmethod
+    def read(cls, data: ReadBuffer) -> KindVarType:
+        ret = AppliedKindType(read_type(data), read_type_list(data))
+        assert read_tag(data) == END_TAG
+        return ret
+
+
+class KindTypeType(ProperType):
+    """type[F] where F is a KindVar — the type of a higher-kinded constructor at runtime."""
+
+    __slots__ = ("kv", "args")
+
+    def __init__(
+        self, kv: KindVarType, args: list[Type] | None = None, line: int = -1, column: int = -1
+    ) -> None:
+        super().__init__(line, column)
+        self.kv = kv
+        self.args = args  # None = bare type[F], [X] = type[F[X]]
+
+    def accept(self, visitor: TypeVisitor[T]) -> T:
+        return visitor.visit_kind_type_type(self)
+
+    def __hash__(self) -> int:
+        return hash(self.kv)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, KindTypeType):
+            return NotImplemented
+        return self.kv == other.kv
+
+    def __repr__(self) -> str:
+        return f"type[{self.kv.name}]"
+
+    def serialize(self) -> JsonDict:
+        return {".class": "KindTypeType", "kv": self.kv.serialize()}
+
+    @classmethod
+    def deserialize(cls, data: JsonDict) -> KindTypeType:
+        assert data[".class"] == "KindTypeType"
+        return KindTypeType(KindVarType.deserialize(data["kv"]))
+
+    def write(self, data: WriteBuffer) -> None:
+        write_tag(data, KIND_TYPE_TYPE)
+        self.kv.write(data)
+        write_tag(data, END_TAG)
+
+    @classmethod
+    def read(cls, data: ReadBuffer) -> KindTypeType:
+        kv = KindVarType.read(data)
+        assert read_tag(data) == END_TAG
+        return KindTypeType(kv)
 
 
 class UnboundType(ProperType):
@@ -3831,6 +4064,16 @@ class TypeStrVisitor(SyntheticTypeVisitor[str]):
             s += f" = {t.default.accept(self)}"
         return s
 
+    def visit_kind_var_type(self, t: KindVarType, /) -> str:
+        return t.name
+
+    def visit_applied_kind_type(self, t: AppliedKindType, /) -> str:
+        args = ", ".join(arg.accept(self) for arg in t.args)
+        return f"{t.base.name}[{args}]"
+
+    def visit_kind_type_type(self, t: KindTypeType, /) -> str:
+        return f"type[{t.kv.name}]"
+
     def visit_callable_type(self, t: CallableType, /) -> str:
         param_spec = t.param_spec()
         if param_spec is not None:
@@ -4320,6 +4563,9 @@ LIST_TYPE: Final[Tag] = 118  # Only valid in serialized ASTs
 ELLIPSIS_TYPE: Final[Tag] = 119  # Only valid in serialized ASTs
 RAW_EXPRESSION_TYPE: Final[Tag] = 120  # Only valid in serialized ASTs
 CALL_TYPE: Final[Tag] = 121  # Only valid in serialized ASTs
+KIND_VAR_TYPE: Final[Tag] = 122
+APPLIED_KIND_TYPE: Final[Tag] = 123
+KIND_TYPE_TYPE: Final[Tag] = 124
 
 
 def read_type(data: ReadBuffer, tag: Tag | None = None) -> Type:
@@ -4364,6 +4610,12 @@ def read_type(data: ReadBuffer, tag: Tag | None = None) -> Type:
         return UnboundType.read(data)
     if tag == DELETED_TYPE:
         return DeletedType.read(data)
+    if tag == KIND_VAR_TYPE:
+        return KindVarType.read(data)
+    if tag == APPLIED_KIND_TYPE:
+        return AppliedKindType.read(data)
+    if tag == KIND_TYPE_TYPE:
+        return KindTypeType.read(data)
     assert False, f"Unknown type tag {tag}"
 
 
@@ -4387,6 +4639,8 @@ def read_type_var_likes(data: ReadBuffer) -> list[TypeVarLikeType]:
             ret.append(ParamSpecType.read(data))
         elif tag == TYPE_VAR_TUPLE_TYPE:
             ret.append(TypeVarTupleType.read(data))
+        elif tag == KIND_VAR_TYPE:
+            ret.append(KindVarType.read(data))
         else:
             assert False, f"Invalid type tag for TypeVarLikeType {tag}"
     return ret

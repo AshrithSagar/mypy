@@ -36,6 +36,7 @@ from mypy.nodes import (
     Context,
     Decorator,
     ImportFrom,
+    KindVarExpr,
     MypyFile,
     ParamSpecExpr,
     PlaceholderNode,
@@ -72,6 +73,7 @@ from mypy.types import (
     TYPE_NAMES,
     UNPACK_TYPE_NAMES,
     AnyType,
+    AppliedKindType,
     BoolTypeQuery,
     CallableArgument,
     CallableType,
@@ -79,6 +81,7 @@ from mypy.types import (
     EllipsisType,
     ErasedType,
     Instance,
+    KindVarType,
     LiteralType,
     NoneType,
     Overloaded,
@@ -413,6 +416,28 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
                     )
                 # Change the line number
                 return tvar_def.copy_modified(line=t.line, column=t.column)
+            if isinstance(sym.node, KindVarExpr):
+                if tvar_def is None:
+                    if self.allow_unbound_tvars:
+                        return t
+                    self.fail(f'KindVar "{t.name}" is unbound', t, code=codes.VALID_TYPE)
+                    return AnyType(TypeOfAny.from_error)
+                assert isinstance(tvar_def, KindVarType)
+                if len(t.args) == 0:  # Bare F (like just "F")
+                    return tvar_def.copy_modified(line=t.line, column=t.column)
+                # F[A] => AppliedKindType
+                analyzed_args = self.anal_array(t.args)
+                if len(analyzed_args) != tvar_def.kind_arity:
+                    self.fail(
+                        f'KindVar "{t.name}" expects {tvar_def.kind_arity} type arguments, '
+                        f"got {len(analyzed_args)}",
+                        t,
+                        code=codes.VALID_TYPE,
+                    )
+                    return AnyType(TypeOfAny.from_error)
+                return AppliedKindType(
+                    base=tvar_def, args=analyzed_args, line=t.line, column=t.column
+                )
             if isinstance(sym.node, TypeVarTupleExpr) and (
                 tvar_def is not None
                 and self.defining_alias
@@ -798,8 +823,6 @@ class TypeAnalyser(SyntheticTypeVisitor[Type], TypeAnalyzerPluginInterface):
             self.allow_type_var_tuple = False
             return result
         elif fullname in SELF_TYPE_NAMES:
-            if t.args:
-                self.fail("Self type cannot have type arguments", t)
             if self.prohibit_self_type is not None:
                 self.fail(f"Self type cannot be used in {self.prohibit_self_type}", t)
                 return AnyType(TypeOfAny.from_error)

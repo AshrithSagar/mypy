@@ -3,13 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable, Container
 from typing import cast
 
+from mypy.expandtype import expand_type
 from mypy.nodes import ARG_STAR, ARG_STAR2
 from mypy.types import (
     AnyType,
+    AppliedKindType,
     CallableType,
     DeletedType,
     ErasedType,
     Instance,
+    KindTypeType,
+    KindVarType,
     LiteralType,
     NoneType,
     Overloaded,
@@ -95,6 +99,24 @@ class EraseTypeVisitor(TypeVisitor[ProperType]):
         # Likely, we can never get here because of aggressive erasure of types that
         # can contain this, but better still return a valid replacement.
         return t.tuple_fallback.copy_modified(args=[AnyType(TypeOfAny.special_form)])
+
+    def visit_kind_var_type(self, t: KindVarType) -> ProperType:
+        return AnyType(TypeOfAny.special_form)
+
+    def visit_applied_kind_type(self, t: AppliedKindType) -> ProperType:
+        bound = t.base.upper_bound
+        if bound is None:
+            return AnyType(TypeOfAny.special_form)
+
+        # Substitute type variables inside bound with actual args
+        mapping = {}  # [FIXME]: Assumes single-arg for now
+        if hasattr(t.base, "type_var_ids") and t.base.type_var_ids:
+            for tv_id, arg in zip(t.base.type_var_ids, t.args):
+                mapping[tv_id] = arg
+        return get_proper_type(expand_type(bound, mapping))
+
+    def visit_kind_type_type(self, t: KindTypeType) -> ProperType:
+        return AnyType(TypeOfAny.special_form)
 
     def visit_unpack_type(self, t: UnpackType) -> ProperType:
         return AnyType(TypeOfAny.special_form)

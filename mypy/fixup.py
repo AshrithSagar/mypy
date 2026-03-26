@@ -10,6 +10,7 @@ from mypy.nodes import (
     ClassDef,
     Decorator,
     FuncDef,
+    KindVarExpr,
     MypyFile,
     OverloadedFuncDef,
     ParamSpecExpr,
@@ -216,6 +217,10 @@ class NodeFixer(NodeVisitor[None]):
         tv.upper_bound.accept(self.type_fixer)
         tv.tuple_fallback.accept(self.type_fixer)
         tv.default.accept(self.type_fixer)
+
+    def visit_kind_var_expr(self, e: KindVarExpr) -> None:
+        e.upper_bound.accept(self.type_fixer)
+        e.default.accept(self.type_fixer)
 
     def visit_var(self, v: Var) -> None:
         if self.current_info is not None:

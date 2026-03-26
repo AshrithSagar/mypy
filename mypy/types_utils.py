@@ -26,6 +26,7 @@ from mypy.types import (
     TypeAliasType,
     TypeType,
     TypeVarType,
+    UnboundType,
     UninhabitedType,
     UnionType,
     UnpackType,
@@ -181,3 +182,15 @@ def store_argument_type(
         if not isinstance(arg_type, ParamSpecType) and not typ.unpack_kwargs:
             arg_type = named_type("builtins.dict", [named_type("builtins.str", []), arg_type])
     defn.arguments[i].variable.type = arg_type
+
+
+def substitute_kind_args(t: Type, name_to_arg: dict[str, Type]) -> Type:
+    proper = get_proper_type(t)
+    if isinstance(proper, UnboundType) and proper.name in name_to_arg:
+        return name_to_arg[proper.name]
+    if isinstance(proper, TypeVarType) and proper.name in name_to_arg:
+        return name_to_arg[proper.name]
+    if isinstance(proper, Instance):
+        new_args = [substitute_kind_args(a, name_to_arg) for a in proper.args]
+        return proper.copy_modified(args=new_args)
+    return proper

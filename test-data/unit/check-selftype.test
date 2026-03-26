@@ -1494,14 +1494,6 @@ def func() -> None:
 
 class C(Self): ...  # E: Self type is only allowed in annotations within class definition
 
-[case testTypingSelfInvalidArgs]
-from typing import Self, List
-
-class C:
-    x: Self[int]  # E: Self type cannot have type arguments
-    def meth(self) -> List[Self[int]]:  # E: Self type cannot have type arguments
-        ...
-
 [case testTypingSelfConflict]
 from typing import Self, TypeVar, Tuple
 
