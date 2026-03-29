@@ -729,6 +729,11 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 res.append(Constraint(template.base, SUBTYPE_OF, actual.base))
             for template_arg, actual_arg in zip(template.args, actual.args):
                 res.extend(infer_constraints(template_arg, actual_arg, self.direction))
+        elif isinstance(actual, Instance):
+            # F[A] matched against list[X] — generate constraints on A from X
+            # This handles the case where F has already been substituted
+            for template_arg, actual_arg in zip(template.args, actual.args):
+                res.extend(infer_constraints(template_arg, actual_arg, self.direction))
         elif isinstance(actual, AnyType):
             for arg in template.args:
                 res.extend(infer_constraints(arg, actual, self.direction))

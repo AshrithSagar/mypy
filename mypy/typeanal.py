@@ -2644,6 +2644,8 @@ class FindTypeVarVisitor(SyntheticTypeVisitor[None]):
         ):
             if (name, node.node) not in self.type_var_likes:
                 self.type_var_likes.append((name, node.node))
+            if t.args:
+                self.process_types(t.args)
         elif not self.include_callables and self._seems_like_callable(t):
             if find_self_type(
                 t, lambda name: self.api.lookup_qualified(name, t, suppress_errors=True)

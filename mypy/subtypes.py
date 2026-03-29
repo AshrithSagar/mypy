@@ -48,6 +48,7 @@ from mypy.types import (
     FunctionLike,
     Instance,
     KindTypeType,
+    KindVarType,
     LiteralType,
     NoneType,
     NormalizedCallableType,
@@ -679,12 +680,24 @@ class SubtypeVisitor(TypeVisitor[bool]):
             return left.min_len >= right.min_len
         return self._is_subtype(left.upper_bound, self.right)
 
+    def visit_kind_var_type(self, left: KindVarType) -> bool:
+        right = self.right
+        if isinstance(right, AnyType):
+            return True
+        if isinstance(right, KindVarType):
+            return True
+        if isinstance(right, Instance) and right.type.fullname == "builtins.object":
+            return True  # KindVar <: object always
+        return self._is_subtype(left.upper_bound, right)
+
     def visit_applied_kind_type(self, left: AppliedKindType) -> bool:
         right = self.right
         # F[A] <: Any
         if isinstance(right, AnyType):
             return True
         # Any <: F[A]  — handled before we get here (left is never Any)
+        if isinstance(right, Instance) and right.type.fullname == "builtins.object":
+            return True  # F[A] <: object always
         # F[A] <: F[B]  requires same KindVar and args compatible
         if isinstance(right, AppliedKindType):
             if left.base.id != right.base.id:
