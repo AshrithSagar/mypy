@@ -384,7 +384,22 @@ class ExpandTypeVisitor(TrivialSyntheticTypeTranslator):
         return t
 
     def visit_applied_kind_type(self, t: AppliedKindType) -> Type:
+        # First check if the KindVar itself is being substituted
+        repl = self.variables.get(t.base.id)
         new_args = [arg.accept(self) for arg in t.args]
+
+        if repl is not None:
+            # F has been substituted with a concrete constructor (e.g., list)
+            # Reconstruct as a proper generic: list[A] -> Instance
+            proper = get_proper_type(repl)
+            if isinstance(proper, Instance):
+                # repl is e.g. Instance(list, []) — apply our args
+                return proper.copy_modified(args=new_args)
+            if isinstance(proper, TypeType) and isinstance(proper.item, Instance):
+                return proper.item.copy_modified(args=new_args)
+            # Fallback: can't collapse, return as-is
+            return AppliedKindType(base=t.base, args=new_args, line=t.line, column=t.column)
+
         return AppliedKindType(base=t.base, args=new_args, line=t.line, column=t.column)
 
     def visit_kind_type_type(self, t: KindTypeType) -> Type:

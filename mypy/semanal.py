@@ -281,6 +281,7 @@ from mypy.types import (
     CallableType,
     FunctionLike,
     Instance,
+    KindVarType,
     LiteralType,
     NoneType,
     Overloaded,
@@ -2434,6 +2435,10 @@ class SemanticAnalyzer(
         if (is_unpacked or is_typealias_param) and sym and isinstance(sym.node, TypeVarTupleExpr):
             if sym.fullname and not self.tvar_scope.allow_binding(sym.fullname):
                 # It's bound by our type variable scope
+                return None
+            return t.name, sym.node
+        if not is_unpacked and sym and isinstance(sym.node, KindVarExpr):
+            if sym.fullname and not self.tvar_scope.allow_binding(sym.fullname):
                 return None
             return t.name, sym.node
         if sym is None or not isinstance(sym.node, TypeVarExpr) or is_unpacked:

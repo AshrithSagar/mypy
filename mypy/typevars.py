@@ -4,6 +4,7 @@ from mypy.erasetype import erase_typevars
 from mypy.nodes import TypeInfo
 from mypy.types import (
     Instance,
+    KindVarType,
     ParamSpecType,
     ProperType,
     TupleType,
@@ -28,6 +29,8 @@ def fill_typevars(typ: TypeInfo) -> Instance | TupleType:
         tv: TypeVarLikeType | UnpackType = typ.defn.type_vars[i]
         # Change the line number
         if isinstance(tv, TypeVarType):
+            tv = tv.copy_modified(line=-1, column=-1)
+        elif isinstance(tv, KindVarType):
             tv = tv.copy_modified(line=-1, column=-1)
         elif isinstance(tv, TypeVarTupleType):
             tv = UnpackType(

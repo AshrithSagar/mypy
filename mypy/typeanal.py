@@ -81,6 +81,7 @@ from mypy.types import (
     EllipsisType,
     ErasedType,
     Instance,
+    KindTypeType,
     KindVarType,
     LiteralType,
     NoneType,
@@ -2686,6 +2687,15 @@ class FindTypeVarVisitor(SyntheticTypeVisitor[None]):
 
     def visit_type_var_tuple(self, t: TypeVarTupleType) -> None:
         self.process_types([t.upper_bound, t.default])
+
+    def visit_kind_var_type(self, t: KindVarType) -> None:
+        pass
+
+    def visit_applied_kind_type(self, t: AppliedKindType) -> None:
+        self.process_types(t.args)
+
+    def visit_kind_type_type(self, t: KindTypeType) -> None:
+        pass
 
     def visit_unpack_type(self, t: UnpackType) -> None:
         self.process_types([t.type])
