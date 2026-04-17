@@ -1716,9 +1716,7 @@ def verify_typealias(
         return
     if isinstance(stub_target, mypy.types.UnionType):
         # complain if runtime is not a Union or UnionType
-        if runtime_origin is not Union and (
-            not (sys.version_info >= (3, 10) and isinstance(runtime, types.UnionType))
-        ):
+        if runtime_origin is not Union and not isinstance(runtime, types.UnionType):
             yield Error(object_path, "is not a Union", stub, runtime, stub_desc=str(stub_target))
         # could check Union contents here...
         return
@@ -1853,7 +1851,7 @@ def is_probably_a_function(runtime: Any) -> bool:
 
 
 def is_read_only_property(runtime: object) -> bool:
-    return isinstance(runtime, property) and runtime.fset is None
+    return isinstance(runtime, property) and runtime.fset is None and runtime.fdel is None
 
 
 def safe_inspect_signature(runtime: Any) -> inspect.Signature | None:
