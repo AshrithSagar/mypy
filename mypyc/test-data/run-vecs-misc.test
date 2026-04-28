@@ -9,7 +9,7 @@
 
 from typing import Any, cast
 from mypy_extensions import i64, i32, i16, u8
-from librt.vecs import vec, append, remove, pop
+from librt.vecs import vec, append, extend, remove, pop
 from testutil import assertRaises
 
 def test_create_empty() -> None:
@@ -236,3 +236,37 @@ def test_nested_misc() -> None:
     v[0][0] = 3.5
     assert v[0] == vec[float]([3.5])
     assert v[:5] == vec[vec[float]]([vec[float]([3.5])])
+
+def test_cap_misc() -> None:
+    v_f = vec[float](capacity=3)
+    assert len(v_f) == 0
+    v_f = append(v_f, 1.5)
+    assert v_f[0] == 1.5
+
+    v_u8 = vec[u8]([1, 2], capacity=5)
+    assert len(v_u8) == 2
+    assert v_u8[0] == 1
+
+    v_i16 = vec[i16](capacity=2)
+    v_i16 = append(v_i16, i16(10))
+    assert v_i16[0] == 10
+
+    v_i32 = vec[i32]([i32(7)], capacity=3)
+    assert v_i32[0] == 7
+
+    v_bool = vec[bool](capacity=4)
+    assert len(v_bool) == 0
+    v_bool = append(v_bool, True)
+    assert v_bool[0] == True
+
+    v_nested = vec[vec[float]](capacity=2)
+    assert len(v_nested) == 0
+    v_nested = append(v_nested, vec[float]([1.0]))
+    assert v_nested[0] == vec[float]([1.0])
+
+def extend_float(v: vec[float], v2: vec[float]) -> vec[float]:
+    return extend(v, v2)
+
+def test_extend_vec_float() -> None:
+    v = extend_float(vec[float]([1.0]), vec[float]([2.5, 3.5]))
+    assert v == vec[float]([1.0, 2.5, 3.5])

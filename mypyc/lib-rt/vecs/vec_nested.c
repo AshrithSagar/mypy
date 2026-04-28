@@ -65,6 +65,10 @@ VecNested VecNested_ConvertFromNested(VecNestedBufItem item) {
 }
 
 VecNested VecNested_New(Py_ssize_t size, Py_ssize_t cap, size_t item_type, size_t depth) {
+    if (cap < 0) {
+        PyErr_SetString(PyExc_ValueError, "capacity must not be negative");
+        return vec_error();
+    }
     if (cap < size)
         cap = size;
     VecNested vec = vec_alloc(cap, item_type, depth);
@@ -265,13 +269,127 @@ VecNested VecNested_Append(VecNested vec, VecNestedBufItem x) {
         memcpy(new.buf->items, vec.buf->items, sizeof(VecNestedBufItem) * vec.len);
         // TODO: How to safely represent deleted items?
         memset(new.buf->items + vec.len, 0, sizeof(VecNestedBufItem) * (new_size - vec.len));
-        // Clear the items in the old vec. We avoid reference count manipulation.
-        memset(vec.buf->items, 0, sizeof(VecNestedBufItem) * vec.len);
+        if (Py_REFCNT(vec.buf) > 1) {
+            // Other references to old buffer exist; INCREF items in new buffer
+            // so old buffer keeps valid references for aliases.
+            for (Py_ssize_t i = 0; i < vec.len; i++)
+                Py_XINCREF(new.buf->items[i].buf);
+        } else {
+            // No aliases; transfer ownership by clearing old buffer items.
+            memset(vec.buf->items, 0, sizeof(VecNestedBufItem) * vec.len);
+        }
         new.buf->items[vec.len] = x;
         new.len = vec.len + 1;
         VEC_DECREF(vec);
         return new;
     }
+}
+
+// Extend 'vec' with items from 'iterable', stealing 'vec'.
+// Return extended 'vec', or error vec on failure.
+VecNested VecNested_Extend(VecNested vec, PyObject *iterable) {
+    if (VecNested_Check(iterable)) {
+        VecNested src = ((VecNestedObject *)iterable)->vec;
+        if (src.buf->item_type == vec.buf->item_type && src.buf->depth == vec.buf->depth) {
+            return VecNested_ExtendVec(vec, src);
+        }
+    }
+
+    PyObject *iter = PyObject_GetIter(iterable);
+    if (iter == NULL) {
+        VEC_DECREF(vec);
+        return vec_error();
+    }
+    PyObject *item;
+    while ((item = PyIter_Next(iter)) != NULL) {
+        VecNestedBufItem vecitem;
+        if (VecNested_UnboxItem(vec, item, &vecitem) < 0) {
+            Py_DECREF(iter);
+            VEC_DECREF(vec);
+            Py_DECREF(item);
+            return vec_error();
+        }
+        vec = VecNested_Append(vec, vecitem);
+        Py_DECREF(item);
+        if (VEC_IS_ERROR(vec)) {
+            Py_DECREF(iter);
+            return vec_error();
+        }
+    }
+    Py_DECREF(iter);
+    if (PyErr_Occurred()) {
+        VEC_DECREF(vec);
+        return vec_error();
+    }
+    return vec;
+}
+
+// Extend 'dst' with items from 'src' vec, stealing 'dst', borrowing 'src'.
+// Return extended vec, or error vec on failure.
+VecNested VecNested_ExtendVec(VecNested dst, VecNested src) {
+    if (src.len == 0)
+        return dst;
+    if (src.len > PY_SSIZE_T_MAX - dst.len) {
+        PyErr_NoMemory();
+        VEC_DECREF(dst);
+        return vec_error();
+    }
+    Py_ssize_t new_len = dst.len + src.len;
+    // VecNested buf is never NULL (even for empty vecs), so no NULL guard needed
+    Py_ssize_t cap = VEC_CAP(dst);
+    if (new_len <= cap && dst.buf != src.buf) {
+        // Fast path: enough capacity and no aliasing
+        for (Py_ssize_t i = 0; i < src.len; i++) {
+            VecNestedBufItem item = src.buf->items[i];
+            Py_XINCREF(item.buf);
+            // Slot may have duplicate ref from prior remove/pop
+            Py_XDECREF(dst.buf->items[dst.len + i].buf);
+            dst.buf->items[dst.len + i] = item;
+        }
+        dst.len = new_len;
+        return dst;
+    }
+    // Need to reallocate (or dst and src share a buffer)
+    Py_ssize_t new_cap = cap;
+    while (new_cap < new_len) {
+        if (new_cap > (PY_SSIZE_T_MAX - 1) / 2) {
+            new_cap = new_len;
+            break;
+        }
+        new_cap = 2 * new_cap + 1;
+    }
+    int aliased = dst.buf == src.buf;
+    VecNested new = vec_alloc(new_cap, dst.buf->item_type, dst.buf->depth);
+    if (VEC_IS_ERROR(new)) {
+        VEC_DECREF(dst);
+        return new;
+    }
+    if (aliased) {
+        // dst and src share a buffer -- incref all items instead of
+        // moving refs, to avoid mutating the shared buffer
+        for (Py_ssize_t i = 0; i < dst.len; i++) {
+            Py_XINCREF(dst.buf->items[i].buf);
+            new.buf->items[i] = dst.buf->items[i];
+        }
+    } else {
+        memcpy(new.buf->items, dst.buf->items, sizeof(VecNestedBufItem) * dst.len);
+        if (Py_REFCNT(dst.buf) > 1) {
+            for (Py_ssize_t i = 0; i < dst.len; i++)
+                Py_XINCREF(new.buf->items[i].buf);
+        } else {
+            memset(dst.buf->items, 0, sizeof(VecNestedBufItem) * dst.len);
+        }
+    }
+    // Copy src items (incref each buf)
+    for (Py_ssize_t i = 0; i < src.len; i++) {
+        VecNestedBufItem item = src.buf->items[i];
+        Py_XINCREF(item.buf);
+        new.buf->items[dst.len + i] = item;
+    }
+    memset(new.buf->items + new_len, 0, sizeof(VecNestedBufItem) * (new_cap - new_len));
+    new.len = new_len;
+    VEC_DECREF(dst);
+    return new;
 }
 
 // Remove item from 'vec', stealing 'vec'. Return 'vec' with item removed.
@@ -557,10 +675,16 @@ PyTypeObject VecNestedType = {
     // TODO: free
 };
 
-PyObject *VecNested_FromIterable(size_t item_type, size_t depth, PyObject *iterable) {
-    VecNested v = vec_alloc(0, item_type, depth);
+PyObject *VecNested_FromIterable(size_t item_type, size_t depth, PyObject *iterable, int64_t cap) {
+    VecNested v = vec_alloc(cap, item_type, depth);
     if (VEC_IS_ERROR(v))
         return NULL;
+    if (cap > 0) {
+        for (int64_t i = 0; i < cap; i++) {
+            v.buf->items[i].len = -1;
+            v.buf->items[i].buf = NULL;
+        }
+    }
     v.len = 0;
 
     PyObject *iter = PyObject_GetIter(iterable);
@@ -604,6 +728,8 @@ VecNestedAPI Vec_NestedAPI = {
     VecNested_Pop,
     VecNested_Remove,
     VecNested_Slice,
+    VecNested_Extend,
+    VecNested_ExtendVec,
 };
 
 #endif  // MYPYC_EXPERIMENTAL
