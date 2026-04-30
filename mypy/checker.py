@@ -6910,6 +6910,10 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                 if should_coerce_literals:
                     target_type = coerce_to_literal(target_type)
 
+                # Morally what we want to do is narrow for each branch based on:
+                # `if_type, else_type = conditional_types(expr_type, target)`
+                # What we actually do is first munge expr_type based on target_type to handle some
+                # special cased known `__eq__` implementations.
                 narrowable_expr_type, ambiguous_expr_type = partition_equality_ambiguous_types(
                     expr_type, target_type, is_identity=is_identity_comparison
                 )
@@ -6964,8 +6968,8 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                 continue
             union_expr_type = get_proper_type(operand_types[i])
             if not isinstance(union_expr_type, UnionType):
-                # Here we won't be able to do any positive narrowing, because we can't conclude
-                # anything from a custom __eq__ returning True.
+                # Here we don't do any positive narrowing, because we can't conclude much
+                # from a custom __eq__ returning True.
                 # But we might be able to do some negative narrowing, since we can assume
                 # a custom __eq__ is reflexive. This should only apply to custom __eq__ enums,
                 # see testNarrowingEqualityCustomEqualityEnum
@@ -7038,7 +7042,10 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
                     if_map, else_map = conditional_types_to_typemaps(
                         operands[i], if_type, else_type
                     )
-                    or_if_maps.append(if_map)
+                    if not isinstance(get_proper_type(expr_type), AnyType):
+                        # We avoid positive narrowing for Any here, for consistency with the
+                        # non-union branch above and to preserve the gradual guarantee
+                        or_if_maps.append(if_map)
                     if is_target_for_value_narrowing(get_proper_type(target_type)):
                         or_else_maps.append(else_map)
 
@@ -8924,24 +8931,9 @@ def reduce_and_conditional_type_maps(ms: list[TypeMap], *, use_meet: bool) -> Ty
     return result
 
 
-BUILTINS_CUSTOM_EQ_CHECKS: Final = {
-    "builtins.frozenset",
-    "_collections_abc.dict_keys",
-    "_collections_abc.dict_items",
-}
-
-
 def has_custom_eq_checks(t: Type) -> bool:
-    return (
-        custom_special_method(t, "__eq__", check_all=False)
-        or custom_special_method(t, "__ne__", check_all=False)
-        # custom_special_method has special casing for builtins.* and typing.* that make the
-        # above always return False. Some builtin collections still have equality behavior that
-        # crosses nominal type boundaries and isn't captured by VALUE_EQUALITY_TYPE_DOMAINS.
-        or (
-            isinstance(pt := get_proper_type(t), Instance)
-            and pt.type.fullname in BUILTINS_CUSTOM_EQ_CHECKS
-        )
+    return custom_special_method(t, "__eq__", check_all=False) or custom_special_method(
+        t, "__ne__", check_all=False
     )
 
 
@@ -9731,6 +9723,8 @@ CLOSED_VALUE_EQUALITY_DOMAINS: Final = {
     "builtins.bytes": "builtins.bytes",
     "builtins.bytearray": "builtins.bytes",
     "builtins.memoryview": "builtins.bytes",
+    "typing.Mapping": "typing.Mapping",
+    "typing.AbstractSet": "typing.AbstractSet",
 }
 
 VALUE_EQUALITY_DOMAINS: Final = {**OPEN_VALUE_EQUALITY_DOMAINS, **CLOSED_VALUE_EQUALITY_DOMAINS}
