@@ -19,17 +19,10 @@ Expected benefits over mypy.fastparse:
 from __future__ import annotations
 
 import os
-import sys
 import time
 from typing import Final, cast
 
-try:
-    import ast_serialize  # type: ignore[import-not-found, unused-ignore]
-except ImportError:
-    print("error: ast-serialize package not installed")
-    print("note: to install run `pip install ast-serialize`")
-    sys.exit(2)
-
+import ast_serialize
 from librt.internal import (
     read_float as read_float_bare,
     read_int as read_int_bare,
@@ -271,7 +264,7 @@ def parse_to_binary_ast(
         platform=options.platform,
         always_true=options.always_true,
         always_false=options.always_false,
-        cache_version=2,
+        cache_version=3,
     )
     return (
         ast_bytes,
@@ -376,7 +369,7 @@ def read_statement(state: State, data: ReadBuffer) -> Statement:
             names.append((name, asname))
 
         stmt = ImportFrom(module_id, relative, names)
-        read_loc(data, stmt)
+        _read_and_set_import_metadata(data, stmt)
         expect_end_tag(data)
         return stmt
     elif tag == nodes.FOR_STMT:
@@ -435,7 +428,7 @@ def read_statement(state: State, data: ReadBuffer) -> Statement:
                 asname = None
             ids.append((name, asname))
         stmt = Import(ids)
-        read_loc(data, stmt)
+        _read_and_set_import_metadata(data, stmt)
         expect_end_tag(data)
         return stmt
     elif tag == nodes.RAISE_STMT:
@@ -519,7 +512,7 @@ def read_statement(state: State, data: ReadBuffer) -> Statement:
         relative = read_int(data)
 
         stmt = ImportAll(module_id, relative)
-        read_loc(data, stmt)
+        _read_and_set_import_metadata(data, stmt)
         expect_end_tag(data)
         return stmt
     elif tag == nodes.NONLOCAL_DECL:
@@ -1376,7 +1369,7 @@ def read_expression(state: State, data: ReadBuffer) -> Expression:
                 s = StrExpr(read_str(data))
                 read_loc(data, s)
                 fitems.append(s)
-        expr = build_fstring_join(state, data, fitems)
+        expr = build_fstring_join(data, fitems)
         expect_end_tag(data)
         return expr
     elif tag == nodes.LIST_COMPREHENSION:
@@ -1577,20 +1570,15 @@ def read_expression(state: State, data: ReadBuffer) -> Expression:
 
 
 def read_fstring_items(state: State, data: ReadBuffer) -> Expression:
-    items = []
     n = read_int(data)
-    items = [read_fstring_item(state, data) for i in range(n)]
-    return build_fstring_join(state, data, items)
+    items = [read_fstring_item(state, data) for _ in range(n)]
+    return build_fstring_join(data, items)
 
 
-def build_fstring_join(state: State, data: ReadBuffer, items: list[Expression]) -> Expression:
+def build_fstring_join(data: ReadBuffer, items: list[Expression]) -> Expression:
+    items = collapse_consecutive_str_items(items)
     if len(items) == 1:
         expr = items[0]
-        read_loc(data, expr)
-        return expr
-    if all(isinstance(item, StrExpr) for item in items):
-        s = "".join([cast(StrExpr, item).value for item in items])
-        expr = StrExpr(s)
         read_loc(data, expr)
         return expr
     args = ListExpr(items)
@@ -1602,6 +1590,22 @@ def build_fstring_join(state: State, data: ReadBuffer, items: list[Expression]) 
     set_line_column(str_expr, call)
     set_line_column(member, call)
     return call
+
+
+def collapse_consecutive_str_items(items: list[Expression]) -> list[Expression]:
+    if len(items) <= 1:
+        return items
+    last = items[0]
+    new_items = [last]
+    for item in items[1:]:
+        if isinstance(last, StrExpr) and isinstance(item, StrExpr):
+            last.value += item.value
+            last.end_line = item.end_line
+            last.end_column = item.end_column
+        else:
+            new_items.append(item)
+            last = item
+    return new_items
 
 
 def read_fstring_item(state: State, data: ReadBuffer) -> Expression:
